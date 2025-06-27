@@ -1,5 +1,7 @@
-Flask==3.1.1
-gunicorn==21.2.0
-twilio==9.6.3
-psycopg2-binary==2.9.10
+flask==2.3.3
+twilio==8.10.1
+psycopg2-binary==2.9.9
+openai==1.30.3
 python-dotenv==1.0.1
+requests==2.32.4
+gunicorn==23.0.0
