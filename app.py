@@ -1,78 +1,158 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import os
 import psycopg2
-import openai
+import os
 
 app = Flask(__name__)
 
 # Connexion PostgreSQL
-conn = psycopg2.connect(os.getenv("DATABASE_URL"))
-cursor = conn.cursor()
+DATABASE_URL = os.environ.get("DATABASE_URL")
+conn = psycopg2.connect(DATABASE_URL, sslmode='require')
 
-# Clé API OpenAI
-openai.api_key = os.getenv("OPENAI_API_KEY")
+# États utilisateurs
+state = {}
 
-# GPT
-def ask_gpt(message):
-    try:
-        completion = openai.ChatCompletion.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": message}]
-        )
-        return completion.choices[0].message["content"]
-    except Exception:
-        return "Désolé, une erreur est survenue."
-
-@app.route("/webhook", methods=["POST"])
-def webhook():
-    incoming_msg = request.values.get("Body", "").strip().lower()
+@app.route("/webhook/whatsapp", methods=["POST"])
+def whatsapp_webhook():
+    incoming_msg = request.form.get("Body", "").strip()
+    num = request.form.get("From", "")
     resp = MessagingResponse()
     msg = resp.message()
 
-    if incoming_msg in ["bonjour", "salut", "hello"]:
-        msg.body("👋 Bienvenue chez Askely Express !
+    if num not in state:
+        state[num] = {"flow": None, "step": None, "data": {}}
 
-"
-                 "1️⃣ Envoyer un colis
-"
-                 "2️⃣ Devenir transporteur
-"
-                 "3️⃣ Suivre un colis
-"
-                 "4️⃣ Déclarer un départ
-"
-                 "5️⃣ Aide ou question libre
+    current = state[num]
 
-"
-                 "Répondez par le numéro correspondant.")
+    if incoming_msg.lower() in ["bonjour", "salut", "hello", "hi"]:
+        state[num] = {"flow": None, "step": "menu", "data": {}}
+        msg.body(
+            "👋 Bienvenue chez Askely Express !\n\n"
+            "Que souhaitez-vous faire ?\n\n"
+            "1️⃣ Envoyer un colis\n"
+            "2️⃣ Devenir transporteur\n"
+            "3️⃣ Publier un départ\n"
+            "4️⃣ Suivre un colis\n\n"
+            "Répondez par le numéro de votre choix."
+        )
         return str(resp)
 
-    if incoming_msg == "1":
-        msg.body("📦 Veuillez envoyer le nom, la ville de départ, la ville d’arrivée et la date d’envoi souhaitée.")
+    # MENU SELECTION
+    if current["step"] == "menu":
+        if incoming_msg == "1":
+            current.update({"flow": "colis", "step": "ask_name"})
+            msg.body("📛 Quel est votre nom ?")
+        elif incoming_msg == "2":
+            current.update({"flow": "transporteur", "step": "ask_name"})
+            msg.body("📛 Votre nom pour l'inscription transporteur ?")
+        elif incoming_msg == "3":
+            current.update({"flow": "depart", "step": "ask_name"})
+            msg.body("📛 Votre nom ?")
+        elif incoming_msg == "4":
+            current.update({"flow": "suivi", "step": "ask_tracking"})
+            msg.body("🔍 Entrez l'ID de votre envoi à suivre :")
+        else:
+            msg.body("❌ Choix invalide. Répondez avec 1, 2, 3 ou 4.")
         return str(resp)
 
-    if incoming_msg == "2":
-        msg.body("🚚 Pour devenir transporteur, envoyez :
-Nom, numéro WhatsApp, ville de départ et date du départ.")
+    # FLOW : COLIS
+    if current["flow"] == "colis":
+        if current["step"] == "ask_name":
+            current["data"]["name"] = incoming_msg
+            current["step"] = "ask_whatsapp"
+            msg.body("📞 Votre numéro WhatsApp ?")
+        elif current["step"] == "ask_whatsapp":
+            current["data"]["whatsapp"] = incoming_msg
+            current["step"] = "ask_date"
+            msg.body("📅 Date d'envoi ? (JJ/MM/AAAA)")
+        elif current["step"] == "ask_date":
+            current["data"]["date"] = incoming_msg
+            current["step"] = "ask_desc"
+            msg.body("📦 Description du colis ?")
+        elif current["step"] == "ask_desc":
+            current["data"]["desc"] = incoming_msg
+            # Enregistrer dans la BDD
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO colis (nom_expediteur, numero_whatsapp, date_envoi, description) VALUES (%s, %s, %s, %s)",
+                    (
+                        current["data"]["name"],
+                        current["data"]["whatsapp"],
+                        current["data"]["date"],
+                        current["data"]["desc"]
+                    )
+                )
+                conn.commit()
+            msg.body("✅ Votre demande a été enregistrée ! Merci.")
+            state.pop(num)
         return str(resp)
 
-    if incoming_msg == "3":
-        msg.body("🔍 Entrez le nom ou le numéro de suivi du colis.")
+    # FLOW : TRANSPORTEUR
+    if current["flow"] == "transporteur":
+        if current["step"] == "ask_name":
+            current["data"]["name"] = incoming_msg
+            current["step"] = "ask_whatsapp"
+            msg.body("📞 Votre numéro WhatsApp ?")
+        elif current["step"] == "ask_whatsapp":
+            current["data"]["whatsapp"] = incoming_msg
+            current["step"] = "ask_date"
+            msg.body("📅 Date de disponibilité ? (JJ/MM/AAAA)")
+        elif current["step"] == "ask_date":
+            current["data"]["date"] = incoming_msg
+            # Enregistrer
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO transporteurs (nom, numero_whatsapp, date_disponible) VALUES (%s, %s, %s)",
+                    (
+                        current["data"]["name"],
+                        current["data"]["whatsapp"],
+                        current["data"]["date"]
+                    )
+                )
+                conn.commit()
+            msg.body("✅ Vous êtes enregistré comme transporteur.")
+            state.pop(num)
         return str(resp)
 
-    if incoming_msg == "4":
-        msg.body("📅 Entrez votre nom, numéro WhatsApp et la date de départ.")
+    # FLOW : DEPART
+    if current["flow"] == "depart":
+        if current["step"] == "ask_name":
+            current["data"]["name"] = incoming_msg
+            current["step"] = "ask_date"
+            msg.body("📅 Date du départ ? (JJ/MM/AAAA)")
+        elif current["step"] == "ask_date":
+            current["data"]["date"] = incoming_msg
+            # Enregistrement
+            with conn.cursor() as cur:
+                cur.execute(
+                    "INSERT INTO departs (nom_transporteur, date_depart) VALUES (%s, %s)",
+                    (
+                        current["data"]["name"],
+                        current["data"]["date"]
+                    )
+                )
+                conn.commit()
+            msg.body("✅ Votre départ est publié.")
+            state.pop(num)
         return str(resp)
 
-    if incoming_msg == "5":
-        gpt_reply = ask_gpt(incoming_msg)
-        msg.body(gpt_reply)
+    # FLOW : SUIVI
+    if current["flow"] == "suivi":
+        if current["step"] == "ask_tracking":
+            tracking_id = incoming_msg
+            with conn.cursor() as cur:
+                cur.execute("SELECT * FROM colis WHERE id = %s", (tracking_id,))
+                result = cur.fetchone()
+            if result:
+                msg.body(f"📦 Détails :\nExpéditeur: {result[1]}\nDate: {result[3]}\nDescription: {result[4]}")
+            else:
+                msg.body("❌ Aucun envoi trouvé avec cet ID.")
+            state.pop(num)
         return str(resp)
 
-    # Par défaut
-    msg.body("🤖 Je n’ai pas compris. Tapez *bonjour* pour voir les options.")
+    # Si aucune correspondance
+    msg.body("🤖 Je n'ai pas compris. Tapez *bonjour* pour commencer.")
     return str(resp)
 
 if __name__ == "__main__":
-    app.run(port=10000, debug=True)
+    app.run()
