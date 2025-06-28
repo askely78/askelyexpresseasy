@@ -53,13 +53,23 @@ def webhook():
     msg = resp.message()
 
     user = get_or_create_user(phone)
+
+    # Si l'utilisateur tape "bonjour"
+    if incoming_msg.lower() == "bonjour":
+        set_state(user["id"], "menu")
+        msg.body(
+            "👋 *Bienvenue chez Askely Express*\n\n"
+            "1️⃣ Je suis *client* (chercher un transporteur)\n"
+            "2️⃣ Je suis *transporteur* (m'inscrire ou publier un départ)"
+        )
+        return str(resp)
+
     state = get_state(user["id"])
 
     if not state:
         set_state(user["id"], "menu")
         msg.body(
             "👋 *Bienvenue chez Askely Express*\n\n"
-            "Tapez un chiffre :\n"
             "1️⃣ Je suis *client* (chercher un transporteur)\n"
             "2️⃣ Je suis *transporteur* (m'inscrire ou publier un départ)"
         )
@@ -78,7 +88,7 @@ def webhook():
                 set_state(user["id"], "publish_date")
                 msg.body("📝 Entrez la *date du départ* à publier (AAAA-MM-JJ) :")
         else:
-            msg.body("❗ Choix invalide. Veuillez taper 1 ou 2.")
+            msg.body("❗ Choix invalide. Tapez 1 ou 2.")
         return str(resp)
 
     # Inscription transporteur
@@ -91,7 +101,7 @@ def webhook():
         msg.body("✅ Inscription enregistrée.\n\n📝 Entrez la *date du départ* à publier (AAAA-MM-JJ) :")
         return str(resp)
 
-    # Publication du départ - Date
+    # Publication départ - date
     if state["state"] == "publish_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -101,7 +111,7 @@ def webhook():
             msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
-    # Publication du départ - Ville
+    # Publication départ - ville
     if state["state"] == "publish_ville":
         date_depart = state["last_message"]
         ville = incoming_msg
@@ -109,7 +119,7 @@ def webhook():
         msg.body("✏️ Entrez une *description* du départ :")
         return str(resp)
 
-    # Publication du départ - Description finale
+    # Publication départ - description
     if state["state"] == "publish_desc":
         date_ville = state["last_message"].split("|")
         date_depart = date_ville[0]
@@ -125,7 +135,7 @@ def webhook():
         msg.body("✅ Votre départ a été publié avec succès.\n\nTapez *menu* pour revenir au menu principal.")
         return str(resp)
 
-    # Recherche transporteur - Date
+    # Recherche transporteur - date
     if state["state"] == "search_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -135,7 +145,7 @@ def webhook():
             msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
-    # Recherche transporteur - Ville
+    # Recherche transporteur - ville
     if state["state"] == "search_ville":
         date_depart = state["last_message"]
         ville = incoming_msg
@@ -158,7 +168,7 @@ def webhook():
                 )
             response += "✅ Vous pouvez les contacter directement."
         else:
-            response = "❗ Aucun transporteur trouvé pour cette date et ville."
+            response = "❗ Aucun transporteur trouvé pour cette date et cette ville."
         set_state(user["id"], "menu")
         msg.body(response)
         return str(resp)
