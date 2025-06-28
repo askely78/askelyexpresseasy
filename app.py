@@ -1,128 +1,115 @@
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import psycopg2
+from psycopg2.extras import RealDictCursor
 import os
 from datetime import datetime
+from dotenv import load_dotenv
 
-# Configuration Flask
+load_dotenv()
+
 app = Flask(__name__)
 
-# Connexion PostgreSQL
-DATABASE_URL = os.getenv("DATABASE_URL")  # Exemple: "postgresql://..."
-conn = psycopg2.connect(DATABASE_URL)
-conn.autocommit = True
-cursor = conn.cursor()
+DATABASE_URL = os.environ.get("DATABASE_URL")
+conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
-# Helper: récupérer l'état utilisateur
-def get_user_state(phone):
-    cursor.execute("SELECT state FROM user_states WHERE user_id = (SELECT id FROM users WHERE phone = %s)", (phone,))
-    result = cursor.fetchone()
-    return result[0] if result else None
+def get_or_create_user(phone):
+    with conn.cursor() as cur:
+        cur.execute("SELECT * FROM users WHERE phone = %s", (phone,))
+        user = cur.fetchone()
+        if not user:
+            cur.execute(
+                "INSERT INTO users (phone, created_at) VALUES (%s, NOW()) RETURNING *",
+                (phone,)
+            )
+            conn.commit()
+            user = cur.fetchone()
+        return user
 
-# Helper: mettre à jour l'état utilisateur
-def set_user_state(phone, state):
-    cursor.execute("SELECT id FROM users WHERE phone = %s", (phone,))
-    user = cursor.fetchone()
-    if user:
-        user_id = user[0]
-    else:
-        cursor.execute("INSERT INTO users (phone) VALUES (%s) RETURNING id", (phone,))
-        user_id = cursor.fetchone()[0]
-    cursor.execute("""
-        INSERT INTO user_states (user_id, state, last_message, updated_at)
-        VALUES (%s, %s, '', NOW())
-        ON CONFLICT (user_id) DO UPDATE SET state = EXCLUDED.state, updated_at = NOW()
-    """, (user_id, state))
+def update_state(user_id, state):
+    with conn.cursor() as cur:
+        cur.execute(
+            "INSERT INTO user_states (user_id, state, updated_at) VALUES (%s, %s, NOW()) "
+            "ON CONFLICT (user_id) DO UPDATE SET state = EXCLUDED.state, updated_at = EXCLUDED.updated_at",
+            (user_id, state)
+        )
+        conn.commit()
 
-# Endpoint WhatsApp
-@app.route("/webhook/whatsapp", methods=["POST"])
-def whatsapp_webhook():
+def get_state(user_id):
+    with conn.cursor() as cur:
+        cur.execute("SELECT state FROM user_states WHERE user_id = %s", (user_id,))
+        res = cur.fetchone()
+        return res["state"] if res else None
+
+@app.route("/webhook", methods=["POST"])
+def webhook():
     incoming_msg = request.form.get("Body", "").strip()
-    from_number = request.form.get("From", "").split(":")[-1]
+    from_number = request.form.get("From", "")
+    phone = from_number.split(":")[-1]
+
+    user = get_or_create_user(phone)
+    current_state = get_state(user["id"])
+
     resp = MessagingResponse()
     msg = resp.message()
 
-    state = get_user_state(from_number)
-
     if incoming_msg.lower() == "bonjour":
-        set_user_state(from_number, "menu")
-        msg.body(
-            "👋 *Bienvenue chez Askely Express !*\n\n"
-            "Envoyez un numéro :\n"
-            "1️⃣ Devenir transporteur\n"
-            "2️⃣ Déclarer un départ\n"
-            "3️⃣ Envoyer un colis\n"
-            "4️⃣ Voir les départs disponibles\n\n"
-            "Répondez par *1*, *2*, *3* ou *4*."
-        )
-        return str(resp)
-
-    if state == "menu":
+        update_state(user["id"], "awaiting_choice")
+        msg.body("👋 *Bienvenue chez Askely Express !*\n\n📦 Pour *envoyer un colis*, tapez *1*\n🚚 Pour *devenir transporteur*, tapez *2*\n📅 Pour *voir les départs*, tapez *3*")
+    elif current_state == "awaiting_choice":
         if incoming_msg == "1":
-            set_user_state(from_number, "register_transporteur_nom")
-            msg.body("✏️ Veuillez indiquer *votre nom complet*.")
+            update_state(user["id"], "sending_parcel")
+            msg.body("✏️ Entrez la *description du colis* :")
         elif incoming_msg == "2":
-            set_user_state(from_number, "declare_depart_date")
-            msg.body("📅 Entrez *la date de départ* (AAAA-MM-JJ).")
+            update_state(user["id"], "becoming_transporter")
+            msg.body("🚚 Entrez votre *nom complet* :")
         elif incoming_msg == "3":
-            set_user_state(from_number, "envoi_colis_description")
-            msg.body("📦 Décrivez le *colis à envoyer*.")
-        elif incoming_msg == "4":
-            set_user_state(from_number, "recherche_depart_date")
-            msg.body("📅 Entrez *la date souhaitée* (AAAA-MM-JJ).")
+            with conn.cursor() as cur:
+                cur.execute("SELECT nom, date_depart FROM transporteurs ORDER BY date_depart")
+                rows = cur.fetchall()
+                if rows:
+                    txt = "🚚 *Départs disponibles* :\n\n"
+                    for r in rows:
+                        txt += f"- {r['nom']} le {r['date_depart']}\n"
+                    msg.body(txt)
+                else:
+                    msg.body("Aucun départ enregistré.")
         else:
-            msg.body("❌ Option non valide. Tapez *bonjour* pour recommencer.")
-        return str(resp)
-
-    if state == "register_transporteur_nom":
-        cursor.execute("INSERT INTO transporteurs (nom, date_depart, details, created_at) VALUES (%s, %s, '', NOW())",
-                       (incoming_msg, datetime.now().date()))
-        set_user_state(from_number, None)
-        msg.body("✅ Vous êtes maintenant *transporteur* enregistré.")
-        return str(resp)
-
-    if state == "declare_depart_date":
-        try:
-            date_depart = datetime.strptime(incoming_msg, "%Y-%m-%d").date()
-            cursor.execute("""
-                INSERT INTO transporteurs (nom, date_depart, details, created_at)
-                VALUES (%s, %s, %s, NOW())
-            """, (from_number, date_depart, "Départ ajouté via WhatsApp."))
-            set_user_state(from_number, None)
-            msg.body(f"✅ *Départ déclaré* pour le {date_depart}.")
-        except ValueError:
-            msg.body("❌ Format invalide. Entrez la date au format AAAA-MM-JJ.")
-        return str(resp)
-
-    if state == "envoi_colis_description":
-        cursor.execute("""
-            INSERT INTO colis (user_id, description, date_envoi, destinataire, created_at)
-            VALUES (
-                (SELECT id FROM users WHERE phone = %s),
-                %s, NOW(), '', NOW()
+            msg.body("Réponse invalide. Tapez *1*, *2* ou *3*.")
+    elif current_state == "sending_parcel":
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO colis (user_id, description, date_envoi, created_at) VALUES (%s, %s, %s, NOW())",
+                (user["id"], incoming_msg, datetime.now().date())
             )
-        """, (from_number, incoming_msg))
-        set_user_state(from_number, None)
-        msg.body("✅ *Colis enregistré* avec succès.")
-        return str(resp)
-
-    if state == "recherche_depart_date":
+            conn.commit()
+        update_state(user["id"], None)
+        msg.body("✅ Votre colis a été enregistré.")
+    elif current_state == "becoming_transporter":
+        update_state(user["id"], "awaiting_date")
+        with conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO transporteurs (user_id, nom, date_depart, created_at) VALUES (%s, %s, %s, NOW())",
+                (user["id"], incoming_msg, datetime.now().date())
+            )
+            conn.commit()
+        msg.body("📅 Entrez la *date de départ* (YYYY-MM-DD) :")
+    elif current_state == "awaiting_date":
         try:
-            date_depart = datetime.strptime(incoming_msg, "%Y-%m-%d").date()
-            cursor.execute("SELECT nom FROM transporteurs WHERE date_depart = %s", (date_depart,))
-            rows = cursor.fetchall()
-            if rows:
-                noms = "\n".join([f"• {r[0]}" for r in rows])
-                msg.body(f"🚚 *Transporteurs le {date_depart}*:\n{noms}")
-            else:
-                msg.body(f"ℹ️ Aucun transporteur trouvé pour le {date_depart}.")
-            set_user_state(from_number, None)
+            date = datetime.strptime(incoming_msg, "%Y-%m-%d").date()
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE transporteurs SET date_depart = %s WHERE user_id = %s ORDER BY created_at DESC LIMIT 1",
+                    (date, user["id"])
+                )
+                conn.commit()
+            update_state(user["id"], None)
+            msg.body("✅ Départ enregistré.")
         except ValueError:
-            msg.body("❌ Format invalide. Entrez la date au format AAAA-MM-JJ.")
-        return str(resp)
-
-    msg.body("🤖 *Je n'ai pas compris.* Tapez *bonjour* pour voir les options.")
+            msg.body("Format de date invalide. Utilisez YYYY-MM-DD.")
+    else:
+        msg.body("Je n'ai pas compris. Tapez *bonjour* pour voir les options.")
     return str(resp)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=10000)
+    app.run(debug=True)
