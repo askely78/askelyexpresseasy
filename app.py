@@ -196,6 +196,3 @@ def webhook():
 
     msg.body("🤖 Je n'ai pas compris. Tapez *menu* pour recommencer.")
     return str(resp)
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
