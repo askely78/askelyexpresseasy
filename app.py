@@ -66,6 +66,15 @@ def webhook():
         )
         return str(resp)
 
+    if incoming_msg.lower() == "menu":
+        set_state(user["id"], "menu")
+        msg.body(
+            "👋 *Menu principal* :\n\n"
+            "1️⃣ Je suis *Client* (chercher un transporteur)\n"
+            "2️⃣ Je suis *Transporteur* (publier un départ)"
+        )
+        return str(resp)
+
     # Menu principal
     if state["state"] == "menu":
         if incoming_msg == "1":
@@ -82,15 +91,6 @@ def webhook():
             msg.body("❗ Choix invalide. Tapez 1 ou 2.")
         return str(resp)
 
-    if incoming_msg.lower() == "menu":
-        set_state(user["id"], "menu")
-        msg.body(
-            "👋 *Menu principal* :\n\n"
-            "1️⃣ Je suis *Client* (chercher un transporteur)\n"
-            "2️⃣ Je suis *Transporteur* (publier un départ)"
-        )
-        return str(resp)
-
     # Inscription transporteur
     if state["state"] == "register_transporteur":
         nom = incoming_msg
@@ -101,7 +101,6 @@ def webhook():
         msg.body("✅ Inscription enregistrée.\n\n📅 *Entrez la date de votre départ* (AAAA-MM-JJ) :")
         return str(resp)
 
-    # Publication départ - date
     if state["state"] == "publish_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -199,4 +198,4 @@ def webhook():
     return str(resp)
 
 if __name__ == "__main__":
-    app.run(debug=True, port=10000)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
