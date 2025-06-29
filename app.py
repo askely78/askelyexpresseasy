@@ -7,9 +7,11 @@ from datetime import datetime
 
 app = Flask(__name__)
 
+# Connexion PostgreSQL
 DATABASE_URL = os.environ.get("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
+# Récupérer ou créer un utilisateur
 def get_or_create_user(phone):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM users WHERE phone_number = %s", (phone,))
@@ -23,6 +25,7 @@ def get_or_create_user(phone):
         conn.commit()
         return cur.fetchone()
 
+# Enregistrer ou mettre à jour l'état
 def set_state(user_id, state, last_message=None):
     with conn.cursor() as cur:
         cur.execute("""
@@ -35,6 +38,7 @@ def set_state(user_id, state, last_message=None):
         """, (user_id, state, last_message))
         conn.commit()
 
+# Récupérer l'état actuel
 def get_state(user_id):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM user_states WHERE user_id = %s", (user_id,))
@@ -50,6 +54,7 @@ def webhook():
     user = get_or_create_user(phone)
     state = get_state(user["id"])
 
+    # Afficher l'accueil professionnel si c'est un premier message ou si l'utilisateur tape bonjour
     if not state or incoming_msg.lower() in ["bonjour", "salut", "hello"]:
         set_state(user["id"], "menu")
         msg.body(
@@ -65,6 +70,7 @@ def webhook():
         )
         return str(resp)
 
+    # Retour menu principal
     if incoming_msg.lower() == "menu":
         set_state(user["id"], "menu")
         msg.body(
@@ -74,6 +80,7 @@ def webhook():
         )
         return str(resp)
 
+    # Menu principal
     if state["state"] == "menu":
         if incoming_msg == "1":
             set_state(user["id"], "search_date")
@@ -89,6 +96,7 @@ def webhook():
             msg.body("❗ Choix invalide. Tapez 1 ou 2.")
         return str(resp)
 
+    # Inscription transporteur
     if state["state"] == "register_transporteur":
         nom = incoming_msg
         with conn.cursor() as cur:
@@ -98,6 +106,7 @@ def webhook():
         msg.body("✅ Inscription enregistrée.\n\n📅 *Entrez la date de votre départ* (AAAA-MM-JJ) :")
         return str(resp)
 
+    # Publication départ - date
     if state["state"] == "publish_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -107,12 +116,14 @@ def webhook():
             msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
+    # Publication départ - ville de départ
     if state["state"] == "publish_ville_depart":
         date_depart = state["last_message"]
         set_state(user["id"], "publish_ville_dest", f"{date_depart}|{incoming_msg}")
         msg.body("🏁 *Entrez la ville de destination* :")
         return str(resp)
 
+    # Publication départ - ville de destination
     if state["state"] == "publish_ville_dest":
         date_ville = state["last_message"].split("|")
         date_depart, ville_depart = date_ville
@@ -120,6 +131,7 @@ def webhook():
         msg.body("✏️ *Entrez une description de votre départ* :")
         return str(resp)
 
+    # Publication départ - description
     if state["state"] == "publish_desc":
         parts = state["last_message"].split("|")
         date_depart, ville_depart, ville_dest = parts
@@ -133,13 +145,14 @@ def webhook():
         set_state(user["id"], "menu")
         msg.body(
             "✅ *Votre départ a été publié avec succès.*\n\n"
-            "🗓️ Date : " + date_depart +
-            "\n🏁 " + ville_depart + " -> " + ville_dest +
-            "\n💬 " + description +
-            "\n\nTapez *menu* pour revenir au menu principal."
+            f"🗓️ Date : {date_depart}\n"
+            f"🏁 {ville_depart} -> {ville_dest}\n"
+            f"💬 {description}\n\n"
+            "Tapez *menu* pour revenir au menu principal."
         )
         return str(resp)
 
+    # Recherche transporteur - date
     if state["state"] == "search_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -149,11 +162,13 @@ def webhook():
             msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
+    # Recherche transporteur - ville de départ
     if state["state"] == "search_ville_depart":
         set_state(user["id"], "search_ville_dest", f"{state['last_message']}|{incoming_msg}")
         msg.body("🏁 *Entrez la ville de destination* :")
         return str(resp)
 
+    # Recherche transporteur - ville de destination
     if state["state"] == "search_ville_dest":
         parts = state["last_message"].split("|")
         date_depart, ville_depart = parts
@@ -162,7 +177,7 @@ def webhook():
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT d.*, u.nom, u.phone_number,
-                       COALESCE(ROUND(AVG(a.note),1), 'Pas de note') AS moyenne,
+                       COALESCE(TO_CHAR(ROUND(AVG(a.note),1), 'FM9.0'), 'Pas de note') AS moyenne,
                        (SELECT avis FROM avis WHERE transporteur_id = u.id ORDER BY created_at DESC LIMIT 1) AS dernier_avis
                 FROM departs d
                 JOIN users u ON d.transporteur_id = u.id
@@ -190,6 +205,7 @@ def webhook():
         msg.body(response + "\nTapez *menu* pour recommencer.")
         return str(resp)
 
+    # Réponse par défaut
     msg.body("🤖 Je n'ai pas compris. Tapez *menu* pour recommencer.")
     return str(resp)
 
