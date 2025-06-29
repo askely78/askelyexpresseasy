@@ -11,22 +11,21 @@ app = Flask(__name__)
 DATABASE_URL = os.environ.get("DATABASE_URL")
 conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
-# Récupérer ou créer l'utilisateur
+# Récupérer ou créer un utilisateur
 def get_or_create_user(phone):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM users WHERE phone_number = %s", (phone,))
         user = cur.fetchone()
         if user:
             return user
-        cur.execute("""
-            INSERT INTO users (phone_number, role)
-            VALUES (%s, %s)
-            RETURNING *
-        """, (phone, 'client'))
+        cur.execute(
+            "INSERT INTO users (phone_number, role) VALUES (%s, %s) RETURNING *",
+            (phone, 'client')
+        )
         conn.commit()
         return cur.fetchone()
 
-# Enregistrer l'état conversationnel
+# Enregistrer l'état
 def set_state(user_id, state, last_message=None):
     with conn.cursor() as cur:
         cur.execute("""
@@ -39,7 +38,7 @@ def set_state(user_id, state, last_message=None):
         """, (user_id, state, last_message))
         conn.commit()
 
-# Récupérer l'état conversationnel
+# Lire l'état
 def get_state(user_id):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM user_states WHERE user_id = %s", (user_id,))
@@ -55,16 +54,15 @@ def webhook():
     user = get_or_create_user(phone)
     state = get_state(user["id"])
 
-    # Accueil professionnel si "bonjour"
     if not state or incoming_msg.lower() in ["bonjour", "salut", "hello"]:
         set_state(user["id"], "menu")
         msg.body(
-            "👋 Bonjour et bienvenue chez *Askely Express* !\n\n"
-            "🚀 *Qui suis-je ?*\n"
+            "👋 Bonjour et bienvenue chez *Askely Express* !\n\n"
+            "🚀 *Qui suis-je ?*\n"
             "Je suis votre assistant transport intelligent.\n\n"
             "✅ Chercher un transporteur\n"
             "✅ Publier un départ\n"
-            "✅ Noter un transporteur\n\n"
+            "✅ Noter et évaluer un transporteur\n\n"
             "✨ Tapez le numéro correspondant :\n"
             "1️⃣ Je suis *Client* (chercher un transporteur)\n"
             "2️⃣ Je suis *Transporteur* (publier un départ)"
@@ -80,7 +78,7 @@ def webhook():
         )
         return str(resp)
 
-    # Menu principal
+    # Menu
     if state["state"] == "menu":
         if incoming_msg == "1":
             set_state(user["id"], "search_date")
@@ -106,7 +104,7 @@ def webhook():
         msg.body("✅ Inscription enregistrée.\n\n📅 *Entrez la date de votre départ* (AAAA-MM-JJ) :")
         return str(resp)
 
-    # Publication départ
+    # Publication
     if state["state"] == "publish_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
@@ -141,21 +139,21 @@ def webhook():
         set_state(user["id"], "menu")
         msg.body(
             "✅ *Votre départ a été publié.*\n\n"
-            "🗓️ Date : "+date_depart+
-            "\n🏁 "+ville_depart+" -> "+ville_dest+
-            "\n💬 "+description+
-            "\n\nTapez *menu* pour revenir au menu principal."
+            f"🗓️ {date_depart}\n"
+            f"🏁 {ville_depart} -> {ville_dest}\n"
+            f"💬 {description}\n\n"
+            "Tapez *menu* pour recommencer."
         )
         return str(resp)
 
-    # Recherche de transporteur
+    # Recherche
     if state["state"] == "search_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
             set_state(user["id"], "search_ville_depart", incoming_msg)
             msg.body("📍 *Entrez la ville de départ* :")
         except ValueError:
-            msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
+            msg.body("❗ Format invalide.")
         return str(resp)
 
     if state["state"] == "search_ville_depart":
@@ -166,12 +164,11 @@ def webhook():
     if state["state"] == "search_ville_dest":
         date_depart, ville_depart = state["last_message"].split("|")
         ville_dest = incoming_msg
-
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
                 SELECT d.*, u.nom, u.phone_number,
-                       COALESCE(ROUND(AVG(a.note),1), 'Pas de note') AS moyenne,
-                       (SELECT commentaire FROM avis WHERE transporteur_id = u.id ORDER BY created_at DESC LIMIT 1) AS dernier_avis
+                    COALESCE(ROUND(AVG(a.note),1)::text, 'Pas de note') AS moyenne,
+                    (SELECT commentaire FROM avis WHERE transporteur_id = u.id ORDER BY created_at DESC LIMIT 1) AS dernier_avis
                 FROM departs d
                 JOIN users u ON d.transporteur_id = u.id
                 LEFT JOIN avis a ON a.transporteur_id = u.id
@@ -181,7 +178,7 @@ def webhook():
             results = cur.fetchall()
 
         if results:
-            response = "🚚 *Transporteurs disponibles* :\n\n"
+            response = "🚚 *Transporteurs trouvés* :\n\n"
             for r in results:
                 response += (
                     f"• *{r['nom']}*\n"
@@ -191,16 +188,15 @@ def webhook():
                     f"📝 Avis : {r['dernier_avis'] or 'Aucun avis'}\n"
                     f"📲 WhatsApp : {r['phone_number']}\n\n"
                 )
-            response += "✏️ *Vous souhaitez donner une note ?*\nRépondez avec :\nnoter <nom du transporteur>"
-            set_state(user["id"], "menu")
         else:
-            response = "❗ Aucun transporteur trouvé."
+            response = "❗ Aucun transporteur trouvé pour ces critères."
 
-        msg.body(response+"\nTapez *menu* pour recommencer.")
+        set_state(user["id"], "menu")
+        msg.body(response + "\nTapez *menu* pour recommencer.")
         return str(resp)
 
     msg.body("🤖 Je n'ai pas compris. Tapez *menu* pour recommencer.")
     return str(resp)
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    app.run(debug=True, port=int(os.environ.get("PORT", 10000)))
