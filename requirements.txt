@@ -1,5 +1,5 @@
-Flask==3.0.2
-gunicorn==21.2.0
-psycopg2-binary==2.9.9
-langdetect==1.0.9
-twilio==9.0.0
+Flask
+gunicorn
+psycopg2-binary
+twilio
+langdetect
