@@ -9,9 +9,9 @@ from langdetect import detect
 app = Flask(__name__)
 
 DATABASE_URL = os.environ.get("DATABASE_URL")
-conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+conn = psycopg2.connect(DATABASE_URL, sslmode="require")
 
-# Récupérer ou créer l'utilisateur
+
 def get_or_create_user(phone):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM users WHERE phone_number = %s", (phone,))
@@ -26,7 +26,7 @@ def get_or_create_user(phone):
         conn.commit()
         return cur.fetchone()
 
-# Mettre à jour l'état de conversation
+
 def set_state(user_id, state, last_message=None):
     with conn.cursor() as cur:
         cur.execute("""
@@ -39,180 +39,150 @@ def set_state(user_id, state, last_message=None):
         """, (user_id, state, last_message))
         conn.commit()
 
-# Récupérer l'état
+
 def get_state(user_id):
     with conn.cursor(cursor_factory=RealDictCursor) as cur:
         cur.execute("SELECT * FROM user_states WHERE user_id = %s", (user_id,))
         return cur.fetchone()
 
-# Traduction simple
-def translate(text, lang):
-    translations = {
-        "fr": text,
-        "en": {
-            "welcome": "👋 *Welcome to Askely Express*!\n\nI can help you:\n1️⃣ Search for a carrier\n2️⃣ Register and publish departures",
-            "choice": "Type 1 or 2 to continue.",
-            "invalid": "❗ Invalid choice. Please type 1 or 2.",
-            "date": "📅 Enter the *departure date* (YYYY-MM-DD):",
-            "city": "📍 Enter the *destination city*:",
-            "desc": "✏️ Enter a *description*:",
-            "saved": "✅ Your departure has been published.",
-            "menu": "👋 *Main menu*\n1️⃣ Search for carrier\n2️⃣ Register as carrier",
-            "not_understood": "🤖 I didn't understand. Type *menu* to return.",
-        },
-        "ar": {
-            "welcome": "👋 *مرحبا بك في Askely Express*!\n\nيمكنني مساعدتك:\n1️⃣ البحث عن ناقل\n2️⃣ التسجيل وإضافة رحلة",
-            "choice": "اكتب 1 أو 2 للمتابعة.",
-            "invalid": "❗ اختيار غير صالح. اكتب 1 أو 2.",
-            "date": "📅 أدخل *تاريخ الرحلة* (YYYY-MM-DD):",
-            "city": "📍 أدخل *مدينة الوصول*:",
-            "desc": "✏️ أدخل *وصف الرحلة*:",
-            "saved": "✅ تم حفظ الرحلة.",
-            "menu": "👋 *القائمة الرئيسية*\n1️⃣ البحث عن ناقل\n2️⃣ التسجيل كناقل",
-            "not_understood": "🤖 لم أفهم. اكتب *menu* للرجوع.",
-        }
-    }
-    return translations.get(lang, translations["fr"]).get(text, text)
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     phone = request.values.get("From", "").split(":")[-1]
-    lang = detect(incoming_msg) if incoming_msg else "fr"
     resp = MessagingResponse()
     msg = resp.message()
 
     user = get_or_create_user(phone)
     state = get_state(user["id"])
 
-    # Si pas d'état, menu d'accueil
     if not state:
         set_state(user["id"], "menu")
-        msg.body(translate("welcome", lang))
+        msg.body(
+            "👋 *Bienvenue chez Askely Express!* 🚀\n\n"
+            "Je vous aide à *envoyer et recevoir des colis*, trouver des transporteurs fiables et gérer vos départs.\n\n"
+            "Envoyez un chiffre :\n"
+            "1️⃣ Je suis *client* (chercher un transporteur)\n"
+            "2️⃣ Je suis *transporteur* (m'inscrire ou publier un départ)"
+        )
         return str(resp)
 
-    # Menu principal
+    if incoming_msg.lower() == "menu":
+        set_state(user["id"], "menu")
+        msg.body(
+            "🏠 *Menu principal*\n\n"
+            "1️⃣ Je suis *client* (chercher un transporteur)\n"
+            "2️⃣ Je suis *transporteur* (publier un départ)"
+        )
+        return str(resp)
+
     if state["state"] == "menu":
         if incoming_msg == "1":
             set_state(user["id"], "search_date")
-            msg.body(translate("date", lang))
+            msg.body("📅 *Date souhaitée du départ* (AAAA-MM-JJ) :")
         elif incoming_msg == "2":
             if user["role"] != "transporteur":
-                set_state(user["id"], "register_transporteur")
-                msg.body("🚚 *Inscription transporteur*\n\nEntrez votre *nom complet* :")
+                set_state(user["id"], "register_name")
+                msg.body("📝 *Inscription transporteur*\n\nIndiquez votre *nom complet* :")
             else:
                 set_state(user["id"], "publish_date")
-                msg.body("📝 Entrez la *date du départ* (YYYY-MM-DD):")
+                msg.body("📅 *Date du départ à publier* (AAAA-MM-JJ) :")
         else:
-            msg.body(translate("invalid", lang))
+            msg.body("❗ Choix invalide. Taper *1* ou *2*.")
         return str(resp)
 
-    # Inscription transporteur
-    if state["state"] == "register_transporteur":
+    if state["state"] == "register_name":
         nom = incoming_msg
         with conn.cursor() as cur:
-            cur.execute("UPDATE users SET nom = %s, role = 'transporteur' WHERE id = %s", (nom, user["id"]))
+            cur.execute("UPDATE users SET nom = %s, role = %s WHERE id = %s", (nom, 'transporteur', user["id"]))
             conn.commit()
         set_state(user["id"], "publish_date")
-        msg.body("✅ Inscription enregistrée.\n\n📝 Entrez la *date du départ* (YYYY-MM-DD):")
+        msg.body("✅ *Inscription validée*.\n\n📅 Entrez la *date du départ* (AAAA-MM-JJ) :")
         return str(resp)
 
-    # Publication - Date
     if state["state"] == "publish_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
             set_state(user["id"], "publish_ville_depart", incoming_msg)
-            msg.body("🏠 Entrez la *ville de départ* :")
+            msg.body("🌍 *Ville de départ* :")
         except ValueError:
-            msg.body("❗ Format invalide. Utilisez YYYY-MM-DD.")
+            msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
-    # Publication - Ville départ
     if state["state"] == "publish_ville_depart":
-        date = state["last_message"]
-        set_state(user["id"], "publish_ville_dest", f"{date}|{incoming_msg}")
-        msg.body(translate("city", lang))
+        date_depart = state["last_message"]
+        ville_depart = incoming_msg
+        set_state(user["id"], "publish_ville_dest", f"{date_depart}|{ville_depart}")
+        msg.body("🎯 *Ville de destination* :")
         return str(resp)
 
-    # Publication - Ville destination
     if state["state"] == "publish_ville_dest":
         parts = state["last_message"].split("|")
-        set_state(user["id"], "publish_desc", f"{parts[0]}|{parts[1]}|{incoming_msg}")
-        msg.body(translate("desc", lang))
+        date_depart, ville_depart = parts
+        ville_dest = incoming_msg
+        set_state(user["id"], "publish_desc", f"{date_depart}|{ville_depart}|{ville_dest}")
+        msg.body("✏️ *Description du départ* :")
         return str(resp)
 
-    # Publication - Description
     if state["state"] == "publish_desc":
-        parts = state["last_message"].split("|")
-        date, ville_dep, ville_dest = parts
+        date_depart, ville_depart, ville_dest = state["last_message"].split("|")
         desc = incoming_msg
         with conn.cursor() as cur:
             cur.execute("""
                 INSERT INTO departs (transporteur_id, date_depart, ville_depart, ville_destination, description)
                 VALUES (%s, %s, %s, %s, %s)
-            """, (user["id"], date, ville_dep, ville_dest, desc))
+            """, (user["id"], date_depart, ville_depart, ville_dest, desc))
             conn.commit()
         set_state(user["id"], "menu")
-        msg.body(translate("saved", lang))
+        msg.body("✅ *Votre départ est publié.*\n\nTapez *menu* pour revenir au menu.")
         return str(resp)
 
-    # Recherche date
     if state["state"] == "search_date":
         try:
             datetime.strptime(incoming_msg, "%Y-%m-%d")
             set_state(user["id"], "search_ville_depart", incoming_msg)
-            msg.body("🏠 Entrez la *ville de départ* :")
+            msg.body("🌍 *Ville de départ* :")
         except ValueError:
-            msg.body("❗ Format invalide. Utilisez YYYY-MM-DD.")
+            msg.body("❗ Format invalide. Utilisez AAAA-MM-JJ.")
         return str(resp)
 
-    # Recherche ville départ
     if state["state"] == "search_ville_depart":
-        set_state(user["id"], "search_ville_dest", f"{state['last_message']}|{incoming_msg}")
-        msg.body(translate("city", lang))
+        date_depart = state["last_message"]
+        set_state(user["id"], "search_ville_dest", f"{date_depart}|{incoming_msg}")
+        msg.body("🎯 *Ville de destination* :")
         return str(resp)
 
-    # Recherche ville destination
     if state["state"] == "search_ville_dest":
-        date, ville_dep = state["last_message"].split("|")
+        date_depart, ville_depart = state["last_message"].split("|")
         ville_dest = incoming_msg
         with conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute("""
-                SELECT d.*, u.nom, u.phone_number,
-                COALESCE(avg(a.note), 0) as note_moyenne,
-                (SELECT commentaire FROM avis_transporteurs a2 WHERE a2.transporteur_id = u.id ORDER BY created_at DESC LIMIT 1) as dernier_avis
+                SELECT d.*, u.nom, u.phone_number
                 FROM departs d
                 JOIN users u ON d.transporteur_id = u.id
-                LEFT JOIN avis_transporteurs a ON a.transporteur_id = u.id
-                WHERE d.date_depart = %s AND d.ville_depart ILIKE %s AND d.ville_destination ILIKE %s
-                GROUP BY d.id, u.id
-            """, (date, ville_dep, ville_dest))
+                WHERE d.date_depart = %s
+                AND d.ville_depart ILIKE %s
+                AND d.ville_destination ILIKE %s
+            """, (date_depart, ville_depart, ville_dest))
             results = cur.fetchall()
-
         if results:
-            response = "🚚 *Transporteurs disponibles* :\n\n"
+            response = "🚚 *Transporteurs trouvés* :\n\n"
             for r in results:
-                stars = "⭐" * int(round(r["note_moyenne"] or 0))
                 response += (
                     f"• *{r['nom']}*\n"
-                    f"📅 {r['date_depart']} - 🏠 {r['ville_depart']} ➡️ {r['ville_destination']}\n"
+                    f"📍 {r['ville_depart']} ➡️ {r['ville_destination']}\n"
+                    f"📅 {r['date_depart']}\n"
                     f"💬 {r['description']}\n"
-                    f"{stars}\n"
-                    f"📝 Dernier avis : {r['dernier_avis'] or 'Aucun avis'}\n"
-                    f"📲 WhatsApp: {r['phone_number']}\n\n"
+                    f"📲 WhatsApp : {r['phone_number']}\n\n"
                 )
+            response += "✅ Vous pouvez les contacter."
         else:
-            response = "❗ Aucun transporteur trouvé."
+            response = "❗ *Aucun transporteur trouvé.*"
         set_state(user["id"], "menu")
         msg.body(response)
         return str(resp)
 
-    if incoming_msg.lower() == "menu":
-        set_state(user["id"], "menu")
-        msg.body(translate("menu", lang))
-        return str(resp)
-
-    msg.body(translate("not_understood", lang))
+    msg.body("🤖 Je n'ai pas compris. Taper *menu* pour recommencer.")
     return str(resp)
 
 if __name__ == "__main__":
